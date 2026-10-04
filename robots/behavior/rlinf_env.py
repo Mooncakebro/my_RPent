@@ -1024,11 +1024,14 @@ class OfficialBehaviorBackend:
                 "pinned RLinf BehaviorEnv must expose env_chunk_step(chunk_actions)"
             )
 
-        import torch
-
-        chunk_action = torch.as_tensor(
-            action.reshape(1, 1, ACTION_DIM), dtype=torch.float32
-        )
+        try:
+            import torch
+        except ModuleNotFoundError:
+            chunk_action = action.reshape(1, 1, ACTION_DIM).astype(np.float32)
+        else:
+            chunk_action = torch.as_tensor(
+                action.reshape(1, 1, ACTION_DIM), dtype=torch.float32
+            )
         raw_obs_list, rewards, terms, truncs, infos = env_chunk_step(chunk_action)
         if not isinstance(raw_obs_list, (list, tuple)) or not raw_obs_list:
             raise TypeError("RLinf BehaviorEnv.env_chunk_step returned no observations")
