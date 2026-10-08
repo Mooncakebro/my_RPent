@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -50,6 +51,8 @@ class BridgedAgent:
         self.env = env
         self.task_name = str(task_name)
         self.public_seed = int(public_seed)
+        self.planner_name = str(planner)
+        self.model_name = model
         self.output_dir = Path(output_dir or "bridge-output").expanduser().resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.memory_dir = Path(memory_dir or memory or (self.output_dir / "memory")).expanduser().resolve()
@@ -173,7 +176,7 @@ class BridgedAgent:
         """Run the standard planner loop until finish, timeout, or failure."""
 
         try:
-            return self.planner.solve(
+            result = self.planner.solve(
                 system_prompt=self.system_prompt,
                 user_message=self.user_prompt,
                 toolkit=self.toolkit,
@@ -181,6 +184,25 @@ class BridgedAgent:
             )
         finally:
             self.close()
+        self._write_transcript(result)
+        return result
+
+    def _write_transcript(self, result: Any) -> None:
+        """Persist a CLI-style transcript so bridge runs can be reviewed."""
+
+        record = {
+            "task": self.task_name,
+            "public_seed": self.public_seed,
+            "planner": self.planner_name,
+            "model": self.model_name,
+            "finish": getattr(result, "finish_result", None),
+            "stats": getattr(result, "stats", None),
+            "error": getattr(result, "error", None),
+            "messages": _strip_image_payloads(getattr(result, "messages", None) or []),
+        }
+        path = self.output_dir / f"transcript_bridge_{self.task_name}_s{self.public_seed}.json"
+        with path.open("w", encoding="utf-8") as stream:
+            json.dump(record, stream, indent=2, default=str)
 
     def close(self) -> None:
         if self._closed:
@@ -204,6 +226,35 @@ def factory(env: Any, **kwargs: Any) -> BridgedAgent:
     """Construct the built-in bridge agent for ``--agent-factory`` use."""
 
     return BridgedAgent(env, **kwargs)
+
+
+def _strip_image_payloads(messages: list[Any]) -> list[Any]:
+    """Remove inline image payloads from transcript messages (like the CLI)."""
+
+    cleaned: list[Any] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            cleaned.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and "data:image" in content:
+            content = "<image payload stripped>"
+        elif isinstance(content, list):
+            content = [
+                block
+                for block in content
+                if not (
+                    isinstance(block, dict)
+                    and any(
+                        isinstance(value, str) and ("data:image" in value or "base64" in value)
+                        for value in block.values()
+                    )
+                )
+            ]
+        cleaned.append(
+            {**{key: value for key, value in message.items() if key != "content"}, "content": content}
+        )
+    return cleaned
 
 
 __all__ = ["BridgedAgent", "factory"]
