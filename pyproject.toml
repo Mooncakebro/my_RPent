@@ -80,6 +80,8 @@ sam3 = [
 behavior = [
     "scipy>=1.10,<2",
     "imageio-ffmpeg>=0.5",
+    "msgpack>=1.0.5",
+    "websockets>=13",
 ]
 molmo = [
     # Molmo's remote code uses transformers' video-processing API, which the

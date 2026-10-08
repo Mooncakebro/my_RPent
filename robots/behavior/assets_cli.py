@@ -125,13 +125,29 @@ def _env_path(value: Path | None, *names: str) -> Path | None:
     return None
 
 
+def _executable_path(value: Path | None, *names: str) -> Path | None:
+    """Like ``_env_path`` but never dereferences venv ``bin/python`` symlinks.
+
+    Resolving a virtualenv's ``bin/python`` follows its symlink to the base
+    interpreter and silently drops the venv site-packages (OmniGibson, OpenPI,
+    ...). Keep the symlink as-is, matching runtime._behavior_python_path.
+    """
+    if value is not None:
+        return Path(value).expanduser().absolute()
+    for name in names:
+        configured = os.environ.get(name)
+        if configured:
+            return Path(configured).expanduser().absolute()
+    return None
+
+
 def _behavior_python(value: Path | None) -> Path:
-    resolved = _env_path(value, "BEHAVIOR_PYTHON", "RPENT_BEHAVIOR_PYTHON")
+    resolved = _executable_path(value, "BEHAVIOR_PYTHON", "RPENT_BEHAVIOR_PYTHON")
     if resolved is None:
         repro_root = os.environ.get("RPENT_REPRO_ROOT")
         if repro_root:
             resolved = (
-                Path(repro_root).expanduser().resolve()
+                Path(repro_root).expanduser().absolute()
                 / "venvs"
                 / "behavior"
                 / "bin"

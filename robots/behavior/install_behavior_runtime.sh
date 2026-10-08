@@ -86,10 +86,12 @@ fi
 # Do NOT switch the rpent venv to .[behavior] (keeps the CLI venv light).
 "${UV_BIN}" pip install --python "${RPENT_VENV}/bin/python" "imageio-ffmpeg>=0.5"
 
-export UV_TORCH_BACKEND=cu124
+# Scoped to the RLinf sub-shell only: exporting it globally would leak into
+# uv's isolated build-env resolution for nvidia-curobo and try to resolve the
+# extra-build-dependency torch==2.7.1 on the cu124 index, where it does not exist.
 (
     cd "${RLINF_ROOT}"
-    bash requirements/install.sh embodied \
+    UV_TORCH_BACKEND=cu124 bash requirements/install.sh embodied \
         --model openpi \
         --env behavior \
         --venv "${BEHAVIOR_VENV}" \
@@ -159,8 +161,19 @@ printf '%s\n' "${FINAL_PINS[@]}" \
     'isaacsim==4.5.0.0' 'isaacsim-core==4.5.0.0' 'isaacsim-rl==4.5.0.0' \
     'omnigibson==3.7.2' 'transformers==4.53.2' 'trimesh==5.1.0' \
     > "${CUROBO_CONSTRAINTS}"
+# curobo's pyproject routes `torch` (for the cu12-torch extra) to its own
+# pytorch-cu128 index via [tool.uv.sources], where torch==2.5.1+cu124 does not
+# exist. A direct wheel URL overrides that routing so the runtime pin holds;
+# the isolated build env keeps resolving torch==2.7.1 from PyPI (CPU wheel).
+# The URL hardcodes cp310: the BEHAVIOR runtime venv is pinned to Python 3.10.
+CUROBO_TORCH_OVERRIDE="${LOG_DIR}/curobo-torch-override.txt"
+cat > "${CUROBO_TORCH_OVERRIDE}" <<'EOF'
+torch @ https://download.pytorch.org/whl/cu124/torch-2.5.1%2Bcu124-cp310-cp310-linux_x86_64.whl
+EOF
 "${UV_BIN}" pip install --python "${BEHAVIOR_PYTHON}" \
     --constraint "${CUROBO_CONSTRAINTS}" \
+    --extra-index-url https://pypi.org/simple \
+    --override "${CUROBO_TORCH_OVERRIDE}" \
     "nvidia-curobo[cu12-torch] @ git+https://github.com/NVlabs/curobo.git@${CUROBO_COMMIT}"
 
 # Final compatibility repin runs after every dependency installer. --no-deps

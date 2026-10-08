@@ -20,6 +20,7 @@ from collections.abc import Mapping
 
 from robots.behavior.prompts import evaluate as evaluate_parts
 from robots.behavior.prompts import explore as explore_parts
+from robots.behavior.prompts import bridge_user
 from robots.behavior.prompts import user as user_parts
 from rpent.prompt.utils import PromptNode
 
@@ -36,10 +37,11 @@ def system_prompt(variables: Mapping[str, object] | None = None) -> PromptNode:
 
 def user_prompt(variables: Mapping[str, object] | None = None) -> PromptNode:
     """Assemble the BEHAVIOR user prompt tree."""
+    parts = bridge_user if (variables or {}).get("mode") == "bridge" else user_parts
     return {
-        "CELL": user_parts.CELL,
-        "MODE": user_parts.MODE,
-        "BEGIN": user_parts.BEGIN,
+        "CELL": parts.CELL,
+        "MODE": parts.MODE,
+        "BEGIN": parts.BEGIN,
     }
 
 
