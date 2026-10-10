@@ -376,6 +376,10 @@ def _behavior_subprocess_env(
     return {
         **overrides,
         "RPENT_REPO_ROOT": str(get_repo_root()),
+        # Segmented allocator: reduces fragmentation OOMs on the shared 4090,
+        # where the VLA's first 32-chunk inference is a peak allocation right
+        # after checkpoint load. Numerics are unaffected (allocator only).
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
         **({"CUDA_VISIBLE_DEVICES": cuda_device} if cuda_device is not None else {}),
     }
 

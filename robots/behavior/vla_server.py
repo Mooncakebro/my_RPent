@@ -64,6 +64,29 @@ PI05_EMBODIMENTS["behavior"] = {
 PI05_ROBOT_PLATFORMS["behavior"] = "BEHAVIOR"
 
 
+def _predict_with_oom_retry(model: Any, obs: dict) -> Any:
+    """One action-chunk prediction with a single OOM recovery attempt.
+
+    The first inference after model load is the peak allocation of an episode
+    (32-chunk generation right after ``.cuda()`` leaves the allocator
+    fragmented). On a shared GPU that is often the difference between success
+    and ``torch.OutOfMemoryError``. Free the cached-but-unused blocks and retry
+    once; a second failure is a genuine capacity problem and propagates.
+    """
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    try:
+        with torch.no_grad():
+            return model.predict_action_batch(obs, mode="eval", compute_values=False)
+    except torch.OutOfMemoryError:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        with torch.no_grad():
+            return model.predict_action_batch(obs, mode="eval", compute_values=False)
+
+
 class BehaviorPi05VLAFacade(Pi05VLAFacade):
     def __init__(
         self,
@@ -89,6 +112,12 @@ class BehaviorPi05VLAFacade(Pi05VLAFacade):
             norm_stats_path=norm_stats_path,
             repo_id=repo_id,
         )
+        # Drop cached-but-unused allocator blocks left over from loading the
+        # checkpoint onto CUDA; the first inference is the peak allocation.
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def predict(self, obs: dict, options: dict | None = None) -> np.ndarray:
         import torch
@@ -102,10 +131,7 @@ class BehaviorPi05VLAFacade(Pi05VLAFacade):
             raise ValueError("BEHAVIOR VLA only supports eval mode")
         # The checkpoint has no value head; the pinned RLinf loader defaults
         # compute_values to True. RpcFacade already serializes this request.
-        with torch.no_grad():
-            actions, _ = self._model.predict_action_batch(
-                obs, mode="eval", compute_values=False
-            )
+        actions, _ = _predict_with_oom_retry(self._model, obs)
         result = np.asarray(to_numpy_tree(actions), dtype=np.float32)
         if result.ndim != 3 or result.shape[0] != 1:
             raise ValueError(f"BEHAVIOR actions must be [1,T,23], got {result.shape}")
