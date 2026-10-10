@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -200,7 +201,10 @@ class BridgedAgent:
             "error": getattr(result, "error", None),
             "messages": _strip_image_payloads(getattr(result, "messages", None) or []),
         }
-        path = self.output_dir / f"transcript_bridge_{self.task_name}_s{self.public_seed}.json"
+        # Timestamp the transcript: a multi-instance evaluator run resets the
+        # bridge once per instance, and each episode must keep its own record.
+        stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        path = self.output_dir / f"transcript_bridge_{self.task_name}_s{self.public_seed}_{stamp}.json"
         with path.open("w", encoding="utf-8") as stream:
             json.dump(record, stream, indent=2, default=str)
 
