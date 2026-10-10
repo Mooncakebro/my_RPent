@@ -12,6 +12,20 @@ from robots.behavior.prompts.bridge_system import system_prompt
 from rpent.prompt.utils import format_prompt
 
 
+def test_float_depth_png_encodes_without_pillow_crash() -> None:
+    """Depth is float32; the PNG encoder must clip+cast, not raise the Pillow
+    'Cannot handle this data type' error seen in the first bridge smoke."""
+
+    from robots.behavior.bridge.shim_env import _png_bytes
+
+    depth = np.full((1, 1), 1.5, dtype=np.float32)
+    payload = _png_bytes(depth[..., None].repeat(3, axis=-1))
+    assert isinstance(payload, bytes) and payload[:4] == b"\x89PNG"
+    # large floats must not wrap/overflow
+    payload2 = _png_bytes(np.full((16, 16, 3), 300.0, dtype=np.float32))
+    assert payload2[:4] == b"\x89PNG"
+
+
 def test_flattened_proprio_maps_to_raw_segments() -> None:
     """The official evaluator sends ONE ``<robot>::proprio`` vector; the shim
     must scatter its PROPRIOCEPTION_INDICES slices onto the 256-dim raw layout.

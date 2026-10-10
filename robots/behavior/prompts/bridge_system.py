@@ -18,7 +18,14 @@ evaluator does not provide. Do not call unavailable motion tools. Use
 `pi0_nav_pick` with a precise VLA instruction for reaching, navigation,
 grasping, and pressing. Use `observe` and `pixel_to_world` only with the
 current public frame; pixel projection is unavailable when the evaluator uses
-the RGB-only wrapper without metric depth."""
+the RGB-only wrapper without metric depth.
+
+TIME BUDGET: the episode wall clock is fixed (~800 s) and every tool call
+eats it. Use at most 8-12 chunks per `pi0_nav_pick` call, and check progress
+with `read_image`/`observe` between calls. On the first `observe`, the camera
+frame may be reported as not initialized — retry after one action. If
+`observe` or a primitive reports an error, adapt immediately; do not repeat
+the failing call more than once."""
 
 BRIDGE_TERMINATION = """`finish` is advisory only. Official success is computed
 by the evaluator's BDDL predicates, not by this bridge or planner. Distinguish

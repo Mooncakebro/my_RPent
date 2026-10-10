@@ -96,7 +96,12 @@ def _png_bytes(image: np.ndarray) -> bytes:
     if _imageio is None:
         raise RuntimeError("imageio is required for bridge.observe()")
     buffer = io.BytesIO()
-    _imageio.imwrite(buffer, np.asarray(image)[..., :3], format="png")
+    array = np.asarray(image)[..., :3]
+    if array.dtype != np.uint8:
+        # Pillow cannot encode float arrays (e.g. metric depth); clip+cast for
+        # visualization only. pixel_to_world uses the raw float depth, not this.
+        array = np.clip(array, 0, 255).astype(np.uint8)
+    _imageio.imwrite(buffer, array, format="png")
     return buffer.getvalue()
 
 
@@ -323,6 +328,14 @@ class ShimBehaviorEnv:
         frame = cameras.get(camera)
         if frame is None:
             raise ValueError(f"unknown camera {camera!r}")
+        rgb = frame["rgb"]
+        if min(rgb.shape[0], rgb.shape[1]) < 8:
+            # The evaluator's very first frame can be a degenerate placeholder
+            # before the renderer initializes; tell the planner to retry.
+            raise ValueError(
+                f"camera {camera} frame not yet initialized "
+                f"(shape {rgb.shape}); retry observe after the next action"
+            )
         return {
             "status": "ok",
             "camera": camera,
