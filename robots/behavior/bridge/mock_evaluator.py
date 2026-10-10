@@ -13,23 +13,36 @@ from .protocol import ACTION_DIM, MsgpackCodec
 
 
 def synthetic_observation(step: int = 0, *, height: int = 32, width: int = 32) -> dict[str, Any]:
-    """Create a valid flattened RGB-D/proprio evaluator observation."""
+    """Create a valid flattened RGB-D/proprio evaluator observation.
+
+    Mirrors the official ``omnigibson.eval.eval`` layout: one flattened
+    ``<robot>::proprio`` vector (PROPRIOCEPTION_INDICES order) and camera keys
+    under the ``<robot>::<robot>:<sensor>:Camera:0::...`` namespace.
+    """
 
     rgb = np.full((height, width, 3), step % 255, dtype=np.uint8)
     depth = np.full((height, width), 1.0, dtype=np.float32)
+    # 61-dim R1Pro proprio: base_qvel[0:3], arm_left_qpos[3:10],
+    # arm_left_qvel[10:17], eef_left_pos[17:20], eef_left_quat[20:24],
+    # gripper_left_qpos[24:26], gripper_left_qvel[26:28],
+    # arm_right_qpos[28:35], arm_right_qvel[35:42], eef_right_pos[42:45],
+    # eef_right_quat[45:49], gripper_right_qpos[49:51], gripper_right_qvel[51:53],
+    # trunk_qpos[53:57], trunk_qvel[57:61].
+    proprio = np.zeros(61, dtype=np.float32)
+    proprio[3:10] = np.arange(7, dtype=np.float32) + 10  # arm_left_qpos
+    proprio[24:26] = [0.5, 0.5]  # gripper_left_qpos
+    proprio[28:35] = np.arange(7, dtype=np.float32) + 20  # arm_right_qpos
+    proprio[49:51] = [0.5, 0.5]  # gripper_right_qpos
+    proprio[53:57] = [1.0, 2.0, 3.0, 4.0]  # trunk_qpos
+    proprio[0:3] = [5.0, 6.0, 7.0]  # base_qvel
     return {
-        "robot_r1:zed_link:Camera:0::rgb": rgb,
-        "robot_r1:left_realsense_link:Camera:0::rgb": rgb.copy(),
-        "robot_r1:right_realsense_link:Camera:0::rgb": rgb.copy(),
-        "robot_r1:zed_link:Camera:0::depth_linear": depth,
-        "robot_r1:left_realsense_link:Camera:0::depth_linear": depth.copy(),
-        "robot_r1:right_realsense_link:Camera:0::depth_linear": depth.copy(),
-        "robot_r1::arm_left_qpos": np.zeros(7, dtype=np.float32),
-        "robot_r1::arm_right_qpos": np.zeros(7, dtype=np.float32),
-        "robot_r1::gripper_left_qpos": np.zeros(2, dtype=np.float32),
-        "robot_r1::gripper_right_qpos": np.zeros(2, dtype=np.float32),
-        "robot_r1::trunk_qpos": np.zeros(4, dtype=np.float32),
-        "robot_r1::base_qvel": np.zeros(3, dtype=np.float32),
+        "robot_r1::robot_r1:zed_link:Camera:0::rgb": rgb,
+        "robot_r1::robot_r1:left_realsense_link:Camera:0::rgb": rgb.copy(),
+        "robot_r1::robot_r1:right_realsense_link:Camera:0::rgb": rgb.copy(),
+        "robot_r1::robot_r1:zed_link:Camera:0::depth_linear": depth,
+        "robot_r1::robot_r1:left_realsense_link:Camera:0::depth_linear": depth.copy(),
+        "robot_r1::robot_r1:right_realsense_link:Camera:0::depth_linear": depth.copy(),
+        "robot_r1::proprio": proprio,
         "robot_r1::cam_rel_poses": np.tile(np.array([0, 0, 0, 0, 0, 0, 1], dtype=np.float32), 3),
         "task_id": np.asarray([0], dtype=np.int64),
     }

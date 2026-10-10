@@ -12,6 +12,24 @@ from robots.behavior.prompts.bridge_system import system_prompt
 from rpent.prompt.utils import format_prompt
 
 
+def test_flattened_proprio_maps_to_raw_segments() -> None:
+    """The official evaluator sends ONE ``<robot>::proprio`` vector; the shim
+    must scatter its PROPRIOCEPTION_INDICES slices onto the 256-dim raw layout.
+    """
+
+    from robots.behavior.schemas import RAW_PROPRIO_SEGMENTS
+
+    observation = adapt_observation(synthetic_observation())
+    states = observation["states"]
+    assert states.shape == (256,)
+    assert np.allclose(states[RAW_PROPRIO_SEGMENTS["left_arm"]], np.arange(7) + 10)
+    assert np.allclose(states[RAW_PROPRIO_SEGMENTS["right_arm"]], np.arange(7) + 20)
+    assert np.allclose(states[RAW_PROPRIO_SEGMENTS["left_gripper"]], [0.5, 0.5])
+    assert np.allclose(states[RAW_PROPRIO_SEGMENTS["right_gripper"]], [0.5, 0.5])
+    assert np.allclose(states[RAW_PROPRIO_SEGMENTS["trunk"]], [1.0, 2.0, 3.0, 4.0])
+    assert np.allclose(states[RAW_PROPRIO_SEGMENTS["base"]], [5.0, 6.0, 7.0])
+
+
 def test_double_reset_during_initialization_spawns_one_agent() -> None:
     import time as _time
 

@@ -39,6 +39,16 @@ _PROPRIO_SUFFIXES = {
     "trunk_qpos": RAW_PROPRIO_SEGMENTS["trunk"],
     "base_qvel": RAW_PROPRIO_SEGMENTS["base"],
 }
+# Official evaluator's flattened ``<robot>::proprio`` vector layout
+# (PROPRIOCEPTION_INDICES for R1Pro), aligned 1:1 with _PROPRIO_SUFFIXES.
+_EVAL_PROPRIO_SLICES = {
+    "base_qvel": np.s_[0:3],
+    "arm_left_qpos": np.s_[3:10],
+    "gripper_left_qpos": np.s_[24:26],
+    "arm_right_qpos": np.s_[28:35],
+    "gripper_right_qpos": np.s_[49:51],
+    "trunk_qpos": np.s_[53:57],
+}
 
 
 def _first(value: Any) -> Any:
@@ -96,6 +106,18 @@ def _raw_proprio(observation: Mapping[str, Any]) -> np.ndarray:
         value = np.asarray(_first(direct), dtype=np.float32).reshape(-1)
         if value.size >= 256:
             return np.ascontiguousarray(value)
+    # The official evaluator flattens all robot observations into one dict and
+    # sends proprioception as a single ``<robot>::proprio`` vector laid out per
+    # PROPRIOCEPTION_INDICES (omnigibson/eval/utils/eval_utils.py). Map those
+    # slices onto the raw 256-dim R1Pro layout the VLA expects.
+    flat = _find(observation, "::proprio")
+    if flat is not None:
+        vector = np.asarray(_first(flat), dtype=np.float32).reshape(-1)
+        if vector.size >= _EVAL_PROPRIO_SLICES["trunk_qpos"].stop:
+            result = np.zeros(256, dtype=np.float32)
+            for name, segment in _PROPRIO_SUFFIXES.items():
+                result[segment] = vector[_EVAL_PROPRIO_SLICES[name]]
+            return result
     result = np.zeros(256, dtype=np.float32)
     found = False
     for name, segment in _PROPRIO_SUFFIXES.items():
