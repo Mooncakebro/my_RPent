@@ -12,6 +12,32 @@ from robots.behavior.prompts.bridge_system import system_prompt
 from rpent.prompt.utils import format_prompt
 
 
+def test_double_reset_during_initialization_spawns_one_agent() -> None:
+    import time as _time
+
+    from robots.behavior.bridge.server import AgentSessionPolicy
+
+    calls: list = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_factory(env, **kwargs):
+        calls.append(env)
+        started.set()
+        release.wait(timeout=5)
+        return None
+
+    policy = AgentSessionPolicy(agent_factory=slow_factory, task_language="test")
+    policy.reset()
+    assert started.wait(timeout=2)
+    policy.reset()  # redundant reset while the factory is still initializing
+    release.set()
+    deadline = _time.time() + 5
+    while _time.time() < deadline and len(calls) < 2:
+        _time.sleep(0.05)
+    assert len(calls) == 1
+
+
 def test_msgpack_round_trip_nested_numpy_tree() -> None:
     value = {"rgb": np.zeros((2, 3, 3), dtype=np.uint8), "nested": {"x": np.arange(4, dtype=np.float32)}}
     result = MsgpackCodec.unpack(MsgpackCodec().pack(value))

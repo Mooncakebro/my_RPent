@@ -61,6 +61,18 @@ class AgentSessionPolicy:
 
     def reset(self) -> None:
         with self._session_lock:
+            # The evaluator sends ``reset`` twice at episode start (once at
+            # instance load, once at rollout start). If an agent is still
+            # initializing (its factory is booting the VLA sidecar), skip the
+            # redundant reset: spawning a second agent would start a second
+            # VLA process and OOM the shared GPU.
+            if (
+                self._thread is not None
+                and self._thread.is_alive()
+                and not self._done.is_set()
+                and self._agent is None
+            ):
+                return
             old_agent = self._agent
             if old_agent is not None:
                 closer = getattr(old_agent, "close", None)
