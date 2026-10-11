@@ -189,12 +189,16 @@ def test_load_task_memory_excerpt_collects_published_files(tmp_path) -> None:
     (tmp_path / "task-specific" / "turning_on_radio_s0_recipe.jsonl").write_text(
         '{"steps": ["press red button"]}\n'
     )
+    # A large audit file must NOT crowd out the recipe: recipes load first.
+    (tmp_path / "task-specific" / "turning_on_radio_s0.json").write_text(
+        "x" * 100_000
+    )
     (tmp_path / "MEMORY.md").write_text("# Global notes\nradio is red\n")
     (tmp_path / "task-specific" / "picking_up_trash_recipe.jsonl").write_text(
         '{"steps": ["bin"]}\n'
     )
     excerpt = load_task_memory_excerpt(tmp_path, "turning_on_radio")
-    assert "press red button" in excerpt
+    assert "press red button" in excerpt  # recipe survives a huge audit file
     assert "radio is red" in excerpt
     assert "bin" not in excerpt  # other-task recipes are excluded
 

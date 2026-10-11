@@ -267,12 +267,20 @@ def load_task_memory_excerpt(
     if not root.is_dir():
         return "(no local memory corpus at " + str(root) + ")"
     candidates: list[Path] = []
+    # Priority order: the solved recipe (the transferable strategy) first,
+    # then global/family notes, then the audit JSON (can be large) last.
+    candidates.extend(sorted(root.glob(f"task-specific/*{task_name}*_recipe.jsonl")))
     for pattern in (
-        f"task-specific/*{task_name}*",
         "global/*.md",
         "task-family/*.md",
     ):
         candidates.extend(sorted(root.glob(pattern)))
+    if (root / "MEMORY.md").is_file():
+        candidates.append(root / "MEMORY.md")
+    candidates.extend(
+        p for p in sorted(root.glob(f"task-specific/*{task_name}*"))
+        if p.suffix != ".jsonl"
+    )
     if (root / "MEMORY.md").is_file():
         candidates.append(root / "MEMORY.md")
     chunks: list[str] = []
