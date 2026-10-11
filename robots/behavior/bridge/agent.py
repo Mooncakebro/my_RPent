@@ -156,6 +156,13 @@ class BridgedAgent:
             self.toolkit._tools.pop(name, None)
 
         prompt_vars = config.prompt_vars
+        # Bridge runs have no DINO component, so episodic memory retrieval is
+        # inactive. Inject the published local memory (task-specific recipes,
+        # MEMORY.md) directly into the prompt so explore-phase knowledge
+        # transfers to the 2026 eval deterministically.
+        prompt_vars["bridge_memory_excerpt"] = load_task_memory_excerpt(
+            self.memory_dir, spec.task_name
+        )
         self.system_prompt = format_prompt(bridge_system_prompt(), variables=prompt_vars)
         self.user_prompt = format_prompt(
             prompt_bundle.user_prompt(variables=prompt_vars),
@@ -176,6 +183,8 @@ class BridgedAgent:
     def run(self) -> Any:
         """Run the standard planner loop until finish, timeout, or failure."""
 
+        result = None
+        error: str | None = None
         try:
             result = self.planner.solve(
                 system_prompt=self.system_prompt,
@@ -183,12 +192,19 @@ class BridgedAgent:
                 toolkit=self.toolkit,
                 max_turns=self.max_turns,
             )
+            return result
+        except BaseException as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
-            self.close()
-        self._write_transcript(result)
-        return result
+            try:
+                self.close()
+            finally:
+                # Persist even when the episode is interrupted (e.g. the
+                # evaluator disconnected and aborted a blocked planner).
+                self._write_transcript(result, error=error)
 
-    def _write_transcript(self, result: Any) -> None:
+    def _write_transcript(self, result: Any, error: str | None = None) -> None:
         """Persist a CLI-style transcript so bridge runs can be reviewed."""
 
         record = {
@@ -196,10 +212,12 @@ class BridgedAgent:
             "public_seed": self.public_seed,
             "planner": self.planner_name,
             "model": self.model_name,
-            "finish": getattr(result, "finish_result", None),
-            "stats": getattr(result, "stats", None),
-            "error": getattr(result, "error", None),
-            "messages": _strip_image_payloads(getattr(result, "messages", None) or []),
+            "finish": getattr(result, "finish_result", None) if result is not None else None,
+            "stats": getattr(result, "stats", None) if result is not None else None,
+            "error": error or (getattr(result, "error", None) if result is not None else None),
+            "messages": _strip_image_payloads(
+                (getattr(result, "messages", None) or []) if result is not None else []
+            ),
         }
         # Timestamp the transcript: a multi-instance evaluator run resets the
         # bridge once per instance, and each episode must keep its own record.
@@ -230,6 +248,54 @@ def factory(env: Any, **kwargs: Any) -> BridgedAgent:
     """Construct the built-in bridge agent for ``--agent-factory`` use."""
 
     return BridgedAgent(env, **kwargs)
+
+
+def load_task_memory_excerpt(
+    memory_dir: str | Path,
+    task_name: str,
+    *,
+    max_chars: int = 6000,
+) -> str:
+    """Collect published local memory relevant to ``task_name`` for the prompt.
+
+    The bridge has no DINO component, so the standard visual-memory retrieval
+    path is inactive. This loads the same published corpus files the planner
+    would otherwise fetch through memory tools, deterministically.
+    """
+
+    root = Path(memory_dir).expanduser()
+    if not root.is_dir():
+        return "(no local memory corpus at " + str(root) + ")"
+    candidates: list[Path] = []
+    for pattern in (
+        f"task-specific/*{task_name}*",
+        "global/*.md",
+        "task-family/*.md",
+    ):
+        candidates.extend(sorted(root.glob(pattern)))
+    if (root / "MEMORY.md").is_file():
+        candidates.append(root / "MEMORY.md")
+    chunks: list[str] = []
+    total = 0
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if not text.strip():
+            continue
+        budget = min(len(text), max_chars - total)
+        if budget <= 0:
+            break
+        chunks.append(f"--- {path.relative_to(root)} ---\n{text[:budget]}")
+        total += budget + 60
+    if not chunks:
+        return "(no published task memory yet)"
+    return "\n".join(chunks)
 
 
 def _strip_image_payloads(messages: list[Any]) -> list[Any]:

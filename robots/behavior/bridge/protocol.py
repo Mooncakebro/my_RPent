@@ -234,6 +234,17 @@ class WebsocketBridgeServer:
                 except Exception:
                     pass
         finally:
+            # Wake a planner blocked waiting for the next evaluator observation:
+            # otherwise its transcript/receipt/video are never written and its
+            # VLA sidecar lingers until process exit.
+            abort = getattr(self.policy, "abort", None)
+            if callable(abort):
+                try:
+                    result = abort()
+                    if inspect.iscoroutine(result):
+                        await result
+                except Exception:
+                    LOGGER.error("bridge abort failed: %s", traceback.format_exc())
             LOGGER.info("Evaluator connection closed: %s", remote)
 
 

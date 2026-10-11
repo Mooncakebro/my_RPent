@@ -105,6 +105,100 @@ def test_policy_checkpoint_measured_binding_for_unregistered_dir(tmp_path) -> No
         raise AssertionError("pinned profile must reject mismatched weights")
 
 
+def test_abort_wakes_agent_blocked_in_step() -> None:
+    """When the evaluator closes the connection, abort() must wake a planner
+    blocked waiting for the next observation so it can clean up and finish."""
+
+    import time
+
+    from robots.behavior.bridge.server import AgentSessionPolicy
+
+    def blocking_agent(env):
+        env.reset()  # consumes the observation we feed below
+        env.step(np.zeros(23, dtype=np.float32))  # blocks for the next obs
+        raise AssertionError("should not complete normally")  # pragma: no cover
+
+    policy = AgentSessionPolicy(agent_factory=blocking_agent, task_language="test")
+    policy.reset()
+    assert policy.rendezvous is not None
+    policy.rendezvous.put_observation(synthetic_observation())
+    deadline = time.time() + 5
+    while time.time() < deadline and policy.rendezvous.observations.qsize() == 0:
+        time.sleep(0.02)
+    policy.abort()
+    deadline = time.time() + 5
+    while time.time() < deadline and not policy._done.is_set():
+        time.sleep(0.05)
+    assert policy._done.is_set()
+    assert policy._error is not None
+    assert "bridge episode was reset" in str(policy._error)
+
+
+def test_stale_generation_does_not_mark_new_agent_done() -> None:
+    """A thread from a previous reset() must not set _done for the new agent."""
+
+    import time
+
+    from robots.behavior.bridge.server import AgentSessionPolicy
+
+    class _BlockingAgent:
+        def __init__(self, gate):
+            self.gate = gate
+
+        def run(self):
+            self.gate.wait(timeout=5)
+
+    gate_first = threading.Event()
+    gate_second = threading.Event()
+    next_gate = [gate_first]
+
+    def factory(env, **kwargs):
+        return _BlockingAgent(next_gate[0])
+
+    policy = AgentSessionPolicy(agent_factory=factory, task_language="test")
+    policy.reset()
+    deadline = time.time() + 5
+    while time.time() < deadline and policy._agent is None:
+        time.sleep(0.02)
+    assert policy._agent is not None  # agent 1 is running (blocked in run())
+    first_agent = policy._agent
+    next_gate[0] = gate_second
+    policy.reset()  # retire generation 1 while agent 1 is still running
+    deadline = time.time() + 5
+    while time.time() < deadline and policy._agent is first_agent:
+        time.sleep(0.02)
+    assert policy._agent is not first_agent  # agent 2 spawned
+    gate_first.set()  # old thread finishes; must NOT set _done for gen 2
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not policy._done.is_set():
+            break
+        time.sleep(0.02)
+    assert not policy._done.is_set()
+    gate_second.set()
+    deadline = time.time() + 5
+    while time.time() < deadline and not policy._done.is_set():
+        time.sleep(0.05)
+    assert policy._done.is_set()
+
+
+def test_load_task_memory_excerpt_collects_published_files(tmp_path) -> None:
+    from robots.behavior.bridge.agent import load_task_memory_excerpt
+
+    (tmp_path / "task-specific").mkdir()
+    (tmp_path / "task-specific" / "turning_on_radio_s0_recipe.jsonl").write_text(
+        '{"steps": ["press red button"]}\n'
+    )
+    (tmp_path / "MEMORY.md").write_text("# Global notes\nradio is red\n")
+    (tmp_path / "task-specific" / "picking_up_trash_recipe.jsonl").write_text(
+        '{"steps": ["bin"]}\n'
+    )
+    excerpt = load_task_memory_excerpt(tmp_path, "turning_on_radio")
+    assert "press red button" in excerpt
+    assert "radio is red" in excerpt
+    assert "bin" not in excerpt  # other-task recipes are excluded
+
+
 def test_msgpack_round_trip_nested_numpy_tree() -> None:
     value = {"rgb": np.zeros((2, 3, 3), dtype=np.uint8), "nested": {"x": np.arange(4, dtype=np.float32)}}
     result = MsgpackCodec.unpack(MsgpackCodec().pack(value))
@@ -173,6 +267,7 @@ def test_bridge_prompt_restricts_unavailable_motion_tools() -> None:
             "memory_profile": "hf",
             "memory_inbox": "/tmp/memory/inbox",
             "public_capabilities": ["observe"],
+            "bridge_memory_excerpt": "(no published task memory yet)",
         },
     )
     assert "navigate_to" in prompt

@@ -54,10 +54,22 @@ class AgentSessionPolicy:
         self._done = threading.Event()
         self._error: BaseException | None = None
         self._agent: Any | None = None
+        self._generation = 0
         self.env: ShimBehaviorEnv | None = None
         self.rendezvous: BridgeRendezvous | None = None
         self._latest_action = np.zeros(23, dtype=np.float32)
         self._latest_observation: dict[str, Any] | None = None
+
+    def abort(self) -> None:
+        """Wake the current agent when the evaluator connection closes.
+
+        Without this, an agent blocked waiting for the next evaluator
+        observation never finishes, so its transcript/receipt/video are never
+        written and its VLA sidecar leaks until process exit.
+        """
+        with self._session_lock:
+            if self.rendezvous is not None:
+                self.rendezvous.close()
 
     def reset(self) -> None:
         with self._session_lock:
@@ -89,13 +101,21 @@ class AgentSessionPolicy:
             self._done.clear()
             self._error = None
             self._latest_action = np.zeros(23, dtype=np.float32)
-            self._thread = threading.Thread(target=self._run_agent, name="behavior-agent", daemon=True)
+            self._generation += 1
+            generation = self._generation
+            self._thread = threading.Thread(
+                target=self._run_agent,
+                args=(generation,),
+                name="behavior-agent",
+                daemon=True,
+            )
             self._thread.start()
 
-    def _run_agent(self) -> None:
+    def _run_agent(self, generation: int) -> None:
         try:
             if self.agent_factory is None:
-                self._done.set()
+                if self._generation == generation:
+                    self._done.set()
                 return
             assert self.env is not None
             try:
@@ -131,11 +151,13 @@ class AgentSessionPolicy:
             elif hasattr(agent, "run") and callable(agent.run):
                 agent.run()
         except BaseException as exc:  # make the websocket fail safe, not stuck
-            self._error = exc
+            if self._generation == generation:
+                self._error = exc
             LOGGER.exception("bridge agent thread failed")
         finally:
-            self._agent = None
-            self._done.set()
+            if self._generation == generation:
+                self._agent = None
+                self._done.set()
 
     def _hold_for(self, observation: Mapping[str, Any]) -> np.ndarray:
         try:

@@ -31,12 +31,21 @@ BRIDGE_TERMINATION = """`finish` is advisory only. Official success is computed
 by the evaluator's BDDL predicates, not by this bridge or planner. Distinguish
 planner completion from evaluator success and report uncertainty honestly."""
 
+PRIOR_KNOWLEDGE = """PRIOR TASK KNOWLEDGE (published local memory, if any):
+
+{{bridge_memory_excerpt}}
+
+Treat it as strategy guidance from earlier exploration. The current 2026 scene
+may differ from the one where the memory was written — verify with `observe`
+before acting, and adapt instead of following steps blindly."""
+
 
 def system_prompt() -> PromptNode:
     """Assemble the bridged evaluation prompt."""
 
     return {
         "ROLE AND BRIDGE": ROLE,
+        "PRIOR TASK KNOWLEDGE": PRIOR_KNOWLEDGE,
         "CURRENT INVOCATION": base.CURRENT_INVOCATION,
         "INVOCATION MODEL": base.INVOCATION_MODEL,
         "RUNTIME": base.RUNTIME,

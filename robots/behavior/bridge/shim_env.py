@@ -237,6 +237,15 @@ class BridgeRendezvous:
 
     def close(self) -> None:
         self.closed = True
+        # Drain first: an agent may be blocked in ``actions.put`` because the
+        # websocket stopped consuming. Freeing the slot lets its pending put
+        # complete; the sentinels below then wake it out of the next get().
+        for slot in (self.observations, self.actions):
+            while True:
+                try:
+                    slot.get_nowait()
+                except queue.Empty:
+                    break
         # Wake an agent blocked in reset()/step() so an episode reset cannot
         # leave a daemon planner thread behind.
         try:
