@@ -70,6 +70,41 @@ def test_double_reset_during_initialization_spawns_one_agent() -> None:
     assert len(calls) == 1
 
 
+def test_policy_checkpoint_measured_binding_for_unregistered_dir(tmp_path) -> None:
+    """Unknown checkpoint dirs are measured-and-bound, not rejected; the
+    PT50 profile still verifies its pins via the directory-name alias."""
+
+    import json
+
+    from robots.behavior import policy_checkpoint as pc
+
+    files = {
+        "model.safetensors": b"fake-weights",
+        "config.json": json.dumps({"action_dim": 32}).encode(),
+        "assets/behavior-1k/2025-challenge-demos/norm_stats.json": json.dumps({
+            "norm_stats": {"state": {"mean": [], "q01": [], "q99": [], "std": []}}
+        }).encode(),
+    }
+    for rel, data in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    binding = pc.validate_policy_checkpoint(tmp_path)
+    assert binding.profile_id == tmp_path.name
+    assert {item.relative_path for item in binding.files} == set(files)
+    # a pinned, registered profile still rejects a mismatched file set
+    alias_dir = tmp_path / "RLinf-Pi05-BEHAVIOR-1K-PT50-CS32"
+    alias_dir.mkdir()
+    (alias_dir / "model.safetensors").write_bytes(b"wrong")
+    try:
+        pc.validate_policy_checkpoint(alias_dir)
+    except pc.PolicyCheckpointError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("pinned profile must reject mismatched weights")
+
+
 def test_msgpack_round_trip_nested_numpy_tree() -> None:
     value = {"rgb": np.zeros((2, 3, 3), dtype=np.uint8), "nested": {"x": np.arange(4, dtype=np.float32)}}
     result = MsgpackCodec.unpack(MsgpackCodec().pack(value))

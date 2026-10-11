@@ -18,13 +18,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+LOGGER = logging.getLogger(__name__)
+
 POLICY_CHECKPOINT_BINDING_SCHEMA_VERSION = 1
 POLICY_CHECKPOINT_ENV = "PI05_CHECKPOINT_PATH"
+POLICY_CHECKPOINT_PROFILE_ENV = "PI05_CHECKPOINT_PROFILE_ID"
 SHARED_POLICY_PROFILE_ID = "pi05-b1kpt50-cs32"
 SHARED_POLICY_CHECKPOINT_PATH = Path(
     os.environ.get(POLICY_CHECKPOINT_ENV, SHARED_POLICY_PROFILE_ID)
@@ -93,6 +97,15 @@ SHARED_POLICY_PROFILE = PolicyCheckpointProfile(
     ),
 )
 
+# Hard-pinned profiles, matched by the checkpoint directory's basename (or via
+# PI05_CHECKPOINT_PROFILE_ID). Any OTHER directory is measured-and-bound: its
+# identity is recorded in the manifest and warned about, instead of being
+# rejected — used for locally converted checkpoints (e.g. the single-task
+# pi05_turn_on_the_radio orbax->safetensors conversion).
+_REGISTERED_PROFILES: dict[str, tuple[PolicyCheckpointProfile, str]] = {
+    SHARED_POLICY_PROFILE_ID: (SHARED_POLICY_PROFILE, "RLinf-Pi05-BEHAVIOR-1K-PT50-CS32"),
+}
+
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(
@@ -131,12 +144,53 @@ def _binding_payload(
     }
 
 
+def _resolve_profile(path: Path) -> tuple[PolicyCheckpointProfile, bool]:
+    """Return (profile, pinned) for a checkpoint directory.
+
+    Registered profiles verify against hard pins. Anything else is measured
+    (sizes + SHA256 of the standard file set) and returned unpinned so the run
+    stays auditable instead of failing.
+    """
+    env_id = os.environ.get(POLICY_CHECKPOINT_PROFILE_ENV)
+    if env_id:
+        entry = _REGISTERED_PROFILES.get(env_id)
+        if entry is None:
+            raise PolicyCheckpointError(
+                f"unknown {POLICY_CHECKPOINT_PROFILE_ENV} value: {env_id!r}; "
+                f"registered={sorted(_REGISTERED_PROFILES)}"
+            )
+        return entry[0], True
+    for profile, alias in _REGISTERED_PROFILES.values():
+        if path.name == alias:
+            return profile, True
+    return None, False  # type: ignore[return-value]
+
+
+def _measure_profile(path: Path) -> PolicyCheckpointProfile:
+    """Measure the standard file set of an unregistered checkpoint."""
+    files: list[CheckpointFileRequirement] = []
+    for requirement in SHARED_POLICY_PROFILE.files:
+        candidate = path / requirement.relative_path
+        if candidate.is_symlink() or not candidate.is_file():
+            raise PolicyCheckpointError(
+                "your Pi05-Behavior model checkpoint file is missing or unsafe: "
+                f"{candidate}"
+            )
+        files.append(
+            CheckpointFileRequirement(
+                relative_path=requirement.relative_path,
+                size_bytes=candidate.stat().st_size,
+                sha256=_file_sha256(candidate),
+            )
+        )
+    return PolicyCheckpointProfile(profile_id=path.name or "local-pi05", files=tuple(files))
+
+
 def validate_policy_checkpoint(
     path: str | Path = SHARED_POLICY_CHECKPOINT_PATH,
 ) -> PolicyCheckpointBinding:
-    """Verify and bind the expected Pi05-Behavior checkpoint files."""
+    """Verify (pinned profiles) or bind (measured) the Pi05-Behavior checkpoint."""
 
-    profile = SHARED_POLICY_PROFILE
     requested = Path(path).expanduser()
     try:
         resolved = requested.resolve(strict=True)
@@ -148,27 +202,40 @@ def validate_policy_checkpoint(
         raise PolicyCheckpointError(
             f"your Pi05-Behavior model checkpoint is not a directory: {resolved}"
         )
-    for requirement in profile.files:
-        candidate = resolved / requirement.relative_path
-        if candidate.is_symlink() or not candidate.is_file():
-            raise PolicyCheckpointError(
-                "your Pi05-Behavior model checkpoint file is missing or unsafe: "
-                f"{candidate}"
-            )
-        size = candidate.stat().st_size
-        if size != requirement.size_bytes:
-            raise PolicyCheckpointError(
-                "your Pi05-Behavior model checkpoint size mismatch for "
-                f"{requirement.relative_path}: expected {requirement.size_bytes}, "
-                f"got {size}"
-            )
-        actual_sha256 = _file_sha256(candidate)
-        if actual_sha256 != requirement.sha256:
-            raise PolicyCheckpointError(
-                "your Pi05-Behavior model checkpoint SHA256 mismatch for "
-                f"{requirement.relative_path}: expected {requirement.sha256}, "
-                f"got {actual_sha256}"
-            )
+    profile, pinned = _resolve_profile(resolved)
+    if profile is None:
+        profile = _measure_profile(resolved)
+        LOGGER.warning(
+            "checkpoint %s is not a registered profile; binding measured "
+            "identity instead of verifying pins: %s",
+            resolved,
+            {
+                item.relative_path: item.sha256
+                for item in profile.files
+            },
+        )
+    elif pinned:
+        for requirement in profile.files:
+            candidate = resolved / requirement.relative_path
+            if candidate.is_symlink() or not candidate.is_file():
+                raise PolicyCheckpointError(
+                    "your Pi05-Behavior model checkpoint file is missing or unsafe: "
+                    f"{candidate}"
+                )
+            size = candidate.stat().st_size
+            if size != requirement.size_bytes:
+                raise PolicyCheckpointError(
+                    "your Pi05-Behavior model checkpoint size mismatch for "
+                    f"{requirement.relative_path}: expected {requirement.size_bytes}, "
+                    f"got {size}"
+                )
+            actual_sha256 = _file_sha256(candidate)
+            if actual_sha256 != requirement.sha256:
+                raise PolicyCheckpointError(
+                    "your Pi05-Behavior model checkpoint SHA256 mismatch for "
+                    f"{requirement.relative_path}: expected {requirement.sha256}, "
+                    f"got {actual_sha256}"
+                )
     payload = _binding_payload(profile, resolved)
     return PolicyCheckpointBinding(
         schema_version=POLICY_CHECKPOINT_BINDING_SCHEMA_VERSION,
@@ -217,6 +284,7 @@ def assert_matching_policy_checkpoint_binding(
 __all__ = [
     "POLICY_CHECKPOINT_BINDING_SCHEMA_VERSION",
     "POLICY_CHECKPOINT_ENV",
+    "POLICY_CHECKPOINT_PROFILE_ENV",
     "SHARED_POLICY_CHECKPOINT_PATH",
     "SHARED_POLICY_PROFILE",
     "SHARED_POLICY_PROFILE_ID",
