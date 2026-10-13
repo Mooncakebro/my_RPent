@@ -56,7 +56,7 @@ from pydantic_ai import (
 from pydantic_ai.agent import WrapperAgent
 from pydantic_ai.capabilities import AbstractCapability, Thinking, on_event
 from pydantic_ai.capabilities.abstract import AgentNode, NodeResult, WrapRunHandler
-from pydantic_ai.exceptions import UsageLimitExceeded, UserError
+from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded, UserError
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.models import Model, ModelRequestContext
 from pydantic_ai.run import AgentRun, AgentRunResult
@@ -74,6 +74,98 @@ logger = get_logger("api")
 
 class _RequestBudgetExhausted(Exception):
     """The conversation has used its configured model-request budget."""
+
+
+class _RetryingModel:
+    """Retry transient upstream failures of the underlying model.
+
+    One-api relays intermittently return ``ResponseFailedEvent`` with
+    ``error.code == 'upstream_error'`` mid-stream (their backend hiccuped).
+    pydantic-ai turns that into an unrecoverable ``ModelAPIError``, killing the
+    turn at the worst possible moment. This wrapper re-requests up to a few
+    times with a short backoff; all other errors propagate unchanged.
+    """
+
+    _TRANSIENT_CODES = {"upstream_error", "server_error", "overloaded"}
+
+    def __init__(self, model: Model, *, attempts: int = 4, backoff_s: float = 2.0) -> None:
+        self._model = model
+        self._attempts = attempts
+        self._backoff_s = backoff_s
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._model, name)
+
+    @property
+    def model_name(self) -> str:  # pragma: no cover - used by pydantic-ai internals
+        return self._model.model_name
+
+    @property
+    def system(self) -> str:  # pragma: no cover - provider name accessor
+        return self._model.system
+
+    async def request(
+        self,
+        messages: Any,
+        model_settings: Any,
+        model_request_parameters: Any,
+    ) -> Any:
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return await self._model.request(
+                    messages, model_settings, model_request_parameters
+                )
+            except ModelAPIError as error:
+                message = str(error)
+                transient = any(
+                    code in message for code in self._TRANSIENT_CODES
+                )
+                if not transient or attempt >= self._attempts:
+                    raise
+                await asyncio.sleep(self._backoff_s * attempt)
+                logger.warning(
+                    "model upstream failure (%s); retrying %d/%d",
+                    message,
+                    attempt,
+                    self._attempts - 1,
+                )
+
+    async def request_stream(
+        self,
+        messages: Any,
+        model_settings: Any,
+        model_request_parameters: Any,
+        run_context: Any = None,
+    ) -> Any:
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                stream = self._model.request_stream(
+                    messages,
+                    model_settings,
+                    model_request_parameters,
+                    run_context=run_context,
+                )
+                async for chunk in stream:
+                    yield chunk
+                return
+            except ModelAPIError as error:
+                message = str(error)
+                transient = any(
+                    code in message for code in self._TRANSIENT_CODES
+                )
+                if not transient or attempt >= self._attempts:
+                    raise
+                await asyncio.sleep(self._backoff_s * attempt)
+                logger.warning(
+                    "model upstream stream failure (%s); retrying %d/%d",
+                    message,
+                    attempt,
+                    self._attempts - 1,
+                )
 
 
 class ApiAgentLoop(Planner):
@@ -94,7 +186,7 @@ class ApiAgentLoop(Planner):
             raise ValueError(f"unsupported reasoning effort: {reasoning_effort}")
         if max_tokens < 1 or timeout_s <= 0:
             raise ValueError("max_tokens and timeout_s must be positive")
-        self.model = model
+        self.model = _RetryingModel(model)
         self.dashboard_events = dashboard_events
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
