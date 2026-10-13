@@ -81,6 +81,10 @@ class BehaviorToolkit(Toolkit):
         self._task_spec = get_task_spec(
             str(values.get("task_name") or "turning_on_radio")
         )
+        # Pop, don't get: episode_video_max_frames is a toolkit-level knob for
+        # the recorder, not a BehaviorPrimitives parameter. Leaving it in
+        # values makes BehaviorPrimitives(**values) raise TypeError.
+        max_frames = values.pop("episode_video_max_frames", 2000)
         values["episode_video_writer"] = VideoArtifactWriter(
             self._state,
             name="episode.mp4",
@@ -89,7 +93,7 @@ class BehaviorToolkit(Toolkit):
             # Bridge episodes run ~3200 steps and the standalone default cap
             # (2000) stops recording before the final attempts. The bridge
             # passes episode_video_max_frames=None; standalone keeps 2000.
-            max_frames=values.get("episode_video_max_frames", 2000),
+            max_frames=max_frames,
         )
         self._primitives = BehaviorPrimitives(**values)
         for spec in behavior_tool_specs_for_task(self._task_spec):
