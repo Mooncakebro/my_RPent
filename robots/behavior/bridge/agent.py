@@ -141,6 +141,9 @@ class BridgedAgent:
             "behavior_phase": "eval",
             "initial_observation": None,
             "initial_info": None,
+            # Bridge episodes run ~3200 steps; the standalone 2000-frame cap
+            # would stop the harness recording before the final attempts.
+            "episode_video_max_frames": None,
         }
         self.toolkit = BehaviorToolkit(
             runtime_kwargs=runtime_kwargs,

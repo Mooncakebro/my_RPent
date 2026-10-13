@@ -86,7 +86,10 @@ class BehaviorToolkit(Toolkit):
             name="episode.mp4",
             step=None,
             fps=20,
-            max_frames=2000,
+            # Bridge episodes run ~3200 steps and the standalone default cap
+            # (2000) stops recording before the final attempts. The bridge
+            # passes episode_video_max_frames=None; standalone keeps 2000.
+            max_frames=values.get("episode_video_max_frames", 2000),
         )
         self._primitives = BehaviorPrimitives(**values)
         for spec in behavior_tool_specs_for_task(self._task_spec):

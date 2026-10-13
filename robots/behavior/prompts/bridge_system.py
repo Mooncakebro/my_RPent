@@ -29,7 +29,14 @@ the failing call more than once."""
 
 BRIDGE_TERMINATION = """`finish` is advisory only. Official success is computed
 by the evaluator's BDDL predicates, not by this bridge or planner. Distinguish
-planner completion from evaluator success and report uncertainty honestly."""
+planner completion from evaluator success and report uncertainty honestly.
+
+Calling `finish` does NOT end the episode: the evaluator keeps stepping and the
+robot freezes into a hold for the remaining budget. Only call `finish` when the
+episode budget is nearly exhausted or the task is clearly impossible. Otherwise
+keep trying variations of the approach (different hand, different contact point,
+different instruction phrasing) until the evaluator itself terminates the
+episode. Unused episode time after `finish` is wasted time."""
 
 PRIOR_KNOWLEDGE = """PRIOR TASK KNOWLEDGE (published local memory, if any):
 
