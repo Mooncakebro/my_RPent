@@ -544,6 +544,14 @@ def test_receipt_is_session_artifact_and_recipe_is_run_artifact(
         elapsed_s=0.1,
     ):
         pass
+    with toolkit.state.record_step(
+        state={"task_success": True},
+        terminated=True,
+        command={"action": "failed_primitive"},
+        result={"primitive_success": False},
+        elapsed_s=0.1,
+    ):
+        pass
 
     recipe_path = Path(toolkit.write_recipe("turning_on_radio_s0") or "")
     assert recipe_path == run_dir / "turning_on_radio_s0_recipe.jsonl"

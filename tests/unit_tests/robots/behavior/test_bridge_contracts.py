@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 
 import numpy as np
@@ -7,7 +8,11 @@ import numpy as np
 from robots.behavior.bridge.mock_evaluator import synthetic_observation
 from robots.behavior.bridge.protocol import ACTION_DIM, MsgpackCodec, sanitize_action
 from robots.behavior.bridge.server import AgentSessionPolicy
-from robots.behavior.bridge.shim_env import BridgeRendezvous, ShimBehaviorEnv, adapt_observation
+from robots.behavior.bridge.shim_env import (
+    BridgeRendezvous,
+    ShimBehaviorEnv,
+    adapt_observation,
+)
 from robots.behavior.prompts.bridge_system import system_prompt
 from rpent.prompt.utils import format_prompt
 
@@ -182,12 +187,39 @@ def test_stale_generation_does_not_mark_new_agent_done() -> None:
     assert policy._done.is_set()
 
 
+def test_gripper_commands_accept_visual_hand_check(monkeypatch) -> None:
+    """The bridge tool schema includes visual_hand_check; it must not collide
+    with the positional ``hand`` argument used by the shim."""
+
+    rendezvous = BridgeRendezvous()
+    env = ShimBehaviorEnv(rendezvous, task_language="test")
+    env.last_observation = adapt_observation(synthetic_observation())
+    monkeypatch.setattr(
+        env,
+        "step",
+        lambda action: (env.last_observation, 0.0, False, False, {}),
+    )
+    check = {
+        "assessment": "selected_hand_visually_confirmed",
+        "camera": "head",
+        "frame_id": "bridge-0-head",
+        "selected_hand": "left",
+    }
+    opened = env.open_gripper(hand="left", visual_hand_check=check)
+    assert opened["status"] == "ok"
+    assert opened["gripper_command"] == 1.0
+    closed = env.close_gripper(hand="right", visual_hand_check=check)
+    assert closed["status"] == "ok"
+    assert closed["gripper_command"] == -1.0
+
+
 def test_load_task_memory_excerpt_collects_published_files(tmp_path) -> None:
     from robots.behavior.bridge.agent import load_task_memory_excerpt
 
     (tmp_path / "task-specific").mkdir()
     (tmp_path / "task-specific" / "turning_on_radio_s0_recipe.jsonl").write_text(
-        '{"steps": ["press red button"]}\n'
+        '{"action": "pi0_nav_pick", "instruction": "press red button"}\n'
+        '{"action": "press", "hand": "right"}\n'
     )
     # A large audit file must NOT crowd out the recipe: recipes load first.
     (tmp_path / "task-specific" / "turning_on_radio_s0.json").write_text(
@@ -201,6 +233,16 @@ def test_load_task_memory_excerpt_collects_published_files(tmp_path) -> None:
     assert "press red button" in excerpt  # recipe survives a huge audit file
     assert "radio is red" in excerpt
     assert "bin" not in excerpt  # other-task recipes are excluded
+    # Simulator-only steps stay visible as context but are not presented as
+    # bridge-callable actions.
+    assert '"_standalone_only_step"' in excerpt
+    assert '"bridge_substitute": "pi0_nav_pick with a precise instruction"' in excerpt
+    recipe_section = excerpt.split("--- task-specific/turning_on_radio_s0_recipe.jsonl ---")[1]
+    recipe_lines = recipe_section.split("---")[0].strip().splitlines()
+    records = [json.loads(line) for line in recipe_lines]
+    assert records[0]["action"] == "pi0_nav_pick"
+    assert "action" not in records[1]
+    assert records[1]["_standalone_only_step"]["action"] == "press"
 
 
 def test_msgpack_round_trip_nested_numpy_tree() -> None:

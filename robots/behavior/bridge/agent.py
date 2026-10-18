@@ -141,6 +141,9 @@ class BridgedAgent:
             "behavior_phase": "eval",
             "initial_observation": None,
             "initial_info": None,
+            # Bridge episodes run ~3200 steps; the standalone 2000-frame cap
+            # would stop the harness recording before the final attempts.
+            "episode_video_max_frames": None,
         }
         self.toolkit = BehaviorToolkit(
             runtime_kwargs=runtime_kwargs,
@@ -250,6 +253,56 @@ def factory(env: Any, **kwargs: Any) -> BridgedAgent:
     return BridgedAgent(env, **kwargs)
 
 
+_BRIDGE_UNAVAILABLE_MEMORY_ACTIONS = frozenset(
+    {"navigate_to", "move_to", "rotate_wrist", "press"}
+)
+_BRIDGE_SUBSTITUTE = "pi0_nav_pick with a precise instruction"
+
+
+def _sanitize_memory_step(value: Any) -> Any:
+    """Mark standalone-only memory steps without dropping their context."""
+
+    if isinstance(value, dict):
+        action = value.get("action")
+        if isinstance(action, str) and action in _BRIDGE_UNAVAILABLE_MEMORY_ACTIONS:
+            return {
+                "_standalone_only_step": dict(value),
+                "bridge_substitute": _BRIDGE_SUBSTITUTE,
+            }
+        return {key: _sanitize_memory_step(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_memory_step(item) for item in value]
+    return value
+
+
+def _sanitize_memory_text(text: str) -> str:
+    """Rewrite JSON/JSONL memory so unavailable bridge tools are not copied."""
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    else:
+        return json.dumps(_sanitize_memory_step(parsed), indent=2, ensure_ascii=False)
+
+    # Recipes are JSONL; sanitize each record while keeping markdown notes
+    # untouched.
+    lines = text.splitlines()
+    parsed_lines: list[Any] = []
+    for line in lines:
+        if not line.strip():
+            parsed_lines.append(None)
+            continue
+        try:
+            parsed_lines.append(json.loads(line))
+        except json.JSONDecodeError:
+            return text
+    return "\n".join(
+        "" if parsed is None else json.dumps(_sanitize_memory_step(parsed), ensure_ascii=False)
+        for parsed in parsed_lines
+    )
+
+
 def load_task_memory_excerpt(
     memory_dir: str | Path,
     task_name: str,
@@ -260,7 +313,9 @@ def load_task_memory_excerpt(
 
     The bridge has no DINO component, so the standard visual-memory retrieval
     path is inactive. This loads the same published corpus files the planner
-    would otherwise fetch through memory tools, deterministically.
+    would otherwise fetch through memory tools, deterministically. Steps that
+    use simulator-only tools are marked so the planner does not copy them into
+    a bridge episode, where those tools are unavailable.
     """
 
     root = Path(memory_dir).expanduser()
@@ -281,8 +336,6 @@ def load_task_memory_excerpt(
         p for p in sorted(root.glob(f"task-specific/*{task_name}*"))
         if p.suffix != ".jsonl"
     )
-    if (root / "MEMORY.md").is_file():
-        candidates.append(root / "MEMORY.md")
     chunks: list[str] = []
     total = 0
     seen: set[Path] = set()
@@ -291,7 +344,7 @@ def load_task_memory_excerpt(
             continue
         seen.add(path)
         try:
-            text = path.read_text(encoding="utf-8")
+            text = _sanitize_memory_text(path.read_text(encoding="utf-8"))
         except Exception:
             continue
         if not text.strip():

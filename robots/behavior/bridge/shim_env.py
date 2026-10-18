@@ -15,7 +15,11 @@ from typing import Any
 
 import numpy as np
 
-from robots.behavior.schemas import ACTION_DIM, RAW_PROPRIO_SEGMENTS, validate_action_chunk
+from robots.behavior.schemas import (
+    ACTION_DIM,
+    RAW_PROPRIO_SEGMENTS,
+    validate_action_chunk,
+)
 
 from .protocol import sanitize_action
 
@@ -416,11 +420,11 @@ class ShimBehaviorEnv:
         }
 
     def close_gripper(self, **kwargs: Any) -> dict[str, Any]:
-        hand = kwargs.get("hand")
+        hand = kwargs.pop("hand", None)
         return self._gripper_command(str(hand), -1.0, "close", **kwargs)
 
     def open_gripper(self, **kwargs: Any) -> dict[str, Any]:
-        hand = kwargs.get("hand")
+        hand = kwargs.pop("hand", None)
         return self._gripper_command(str(hand), 1.0, "open", **kwargs)
 
     def press(self, **kwargs: Any) -> dict[str, Any]:
