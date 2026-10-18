@@ -93,6 +93,10 @@ class AgentSessionPolicy:
                         closer()
                     except Exception:
                         LOGGER.exception("failed to close previous bridge agent")
+            # Drop the stale agent now: the evaluator sends a second reset while
+            # the replacement factory is still initializing, and the guard below
+            # must see ``_agent is None`` or it spawns a second VLA sidecar.
+            self._agent = None
             if self.rendezvous is not None:
                 self.rendezvous.close()
             self.rendezvous = BridgeRendezvous()

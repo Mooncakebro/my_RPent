@@ -213,6 +213,59 @@ def test_gripper_commands_accept_visual_hand_check(monkeypatch) -> None:
     assert closed["gripper_command"] == -1.0
 
 
+def test_double_reset_after_running_agent_spawns_one_replacement() -> None:
+    """The evaluator resets twice per instance. After an agent has run, the
+    first reset replaces it; the second must not spawn a second VLA sidecar."""
+
+    import time as _time
+
+    from robots.behavior.bridge.server import AgentSessionPolicy
+
+    calls: list = []
+    second_started = threading.Event()
+    release = threading.Event()
+    agents: list = []
+
+    class BlockingAgent:
+        def __init__(self) -> None:
+            self.stop = threading.Event()
+
+        def run(self) -> None:
+            self.stop.wait(timeout=10)
+
+        def close(self) -> None:
+            self.stop.set()
+
+    def factory(env, **kwargs):
+        calls.append(env)
+        agent = BlockingAgent()
+        agents.append(agent)
+        if len(calls) == 1:
+            return agent
+        second_started.set()
+        release.wait(timeout=5)
+        return agent
+
+    policy = AgentSessionPolicy(agent_factory=factory, task_language="test")
+    policy.reset()
+    deadline = _time.time() + 5
+    while _time.time() < deadline and policy._agent is None:
+        _time.sleep(0.02)
+    assert policy._agent is not None
+
+    policy.reset()  # new instance: retire the running agent
+    assert second_started.wait(timeout=2)
+    policy.reset()  # duplicate reset while the replacement is initializing
+    release.set()
+    deadline = _time.time() + 5
+    while _time.time() < deadline and len(calls) < 2:
+        _time.sleep(0.02)
+    _time.sleep(0.2)
+    assert len(calls) == 2
+    for agent in agents:
+        agent.stop.set()
+
+
 def test_load_task_memory_excerpt_collects_published_files(tmp_path) -> None:
     from robots.behavior.bridge.agent import load_task_memory_excerpt
 
