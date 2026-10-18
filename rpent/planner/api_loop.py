@@ -58,7 +58,8 @@ from pydantic_ai.capabilities import AbstractCapability, Thinking, on_event
 from pydantic_ai.capabilities.abstract import AgentNode, NodeResult, WrapRunHandler
 from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded, UserError
 from pydantic_ai.messages import ModelMessage, UserContent
-from pydantic_ai.models import Model, ModelRequestContext
+from pydantic_ai.models import Model, ModelRequestContext, StreamedResponse
+from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.run import AgentRun, AgentRunResult
 from pydantic_ai_harness.compaction import SlidingWindowCompaction
 
@@ -76,7 +77,7 @@ class _RequestBudgetExhausted(Exception):
     """The conversation has used its configured model-request budget."""
 
 
-class _RetryingModel:
+class _RetryingModel(WrapperModel):
     """Retry transient upstream failures of the underlying model.
 
     One-api relays intermittently return ``ResponseFailedEvent`` with
@@ -89,20 +90,9 @@ class _RetryingModel:
     _TRANSIENT_CODES = {"upstream_error", "server_error", "overloaded"}
 
     def __init__(self, model: Model, *, attempts: int = 4, backoff_s: float = 2.0) -> None:
-        self._model = model
+        super().__init__(model)
         self._attempts = attempts
         self._backoff_s = backoff_s
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._model, name)
-
-    @property
-    def model_name(self) -> str:  # pragma: no cover - used by pydantic-ai internals
-        return self._model.model_name
-
-    @property
-    def system(self) -> str:  # pragma: no cover - provider name accessor
-        return self._model.system
 
     async def request(
         self,
@@ -114,7 +104,7 @@ class _RetryingModel:
         while True:
             attempt += 1
             try:
-                return await self._model.request(
+                return await self.wrapped.request(
                     messages, model_settings, model_request_parameters
                 )
             except ModelAPIError as error:
@@ -132,30 +122,69 @@ class _RetryingModel:
                     self._attempts - 1,
                 )
 
+    @asynccontextmanager
     async def request_stream(
         self,
         messages: Any,
         model_settings: Any,
         model_request_parameters: Any,
         run_context: Any = None,
-    ) -> Any:
+    ) -> AsyncIterator[StreamedResponse]:
+        yield _RetryingStreamedResponse(
+            opener=lambda: self.wrapped.request_stream(
+                messages,
+                model_settings,
+                model_request_parameters,
+                run_context=run_context,
+            ),
+            model=self.wrapped,
+            model_request_parameters=model_request_parameters,
+            attempts=self._attempts,
+            backoff_s=self._backoff_s,
+        )
+
+
+class _RetryingStreamedResponse(StreamedResponse):
+    """Streamed response that re-issues a transiently failed model request.
+
+    Events are buffered per attempt and only delivered once the attempt
+    completes, so a retry cannot replay chunks already seen by the caller.
+    """
+
+    def __init__(
+        self,
+        *,
+        opener: Any,
+        model: Model,
+        model_request_parameters: Any,
+        attempts: int,
+        backoff_s: float,
+    ) -> None:
+        super().__init__(model_request_parameters=model_request_parameters)
+        self._opener = opener
+        self._model = model
+        self._attempts = attempts
+        self._backoff_s = backoff_s
+        self._inner: StreamedResponse | None = None
+
+    async def _iterate(self) -> AsyncIterator[Any]:
         attempt = 0
         while True:
             attempt += 1
             try:
-                stream = self._model.request_stream(
-                    messages,
-                    model_settings,
-                    model_request_parameters,
-                    run_context=run_context,
-                )
-                async for chunk in stream:
-                    yield chunk
+                buffered: list[Any] = []
+                async with self._opener() as inner:
+                    self._inner = inner
+                    async for event in inner:
+                        buffered.append(event)
+                self._copy_stream_metadata()
+                for event in buffered:
+                    yield event
                 return
             except ModelAPIError as error:
                 message = str(error)
                 transient = any(
-                    code in message for code in self._TRANSIENT_CODES
+                    code in message for code in _RetryingModel._TRANSIENT_CODES
                 )
                 if not transient or attempt >= self._attempts:
                     raise
@@ -166,6 +195,51 @@ class _RetryingModel:
                     attempt,
                     self._attempts - 1,
                 )
+
+    def __aiter__(self) -> AsyncIterator[Any]:
+        return self._iterate()
+
+    def _copy_stream_metadata(self) -> None:
+        inner = self._inner
+        if inner is None:
+            return
+        self.final_result_event = inner.final_result_event
+        self.finish_reason = inner.finish_reason
+        self.provider_response_id = inner.provider_response_id
+        self.provider_details = inner.provider_details
+        self.metadata = inner.metadata
+        self.state = inner.state
+
+    def get(self) -> Any:
+        return self._inner.get() if self._inner is not None else super().get()
+
+    @property
+    def usage(self) -> Any:
+        return self._inner.usage if self._inner is not None else super().usage
+
+    @property
+    def model_name(self) -> str:
+        return self._inner.model_name if self._inner is not None else self._model.model_name
+
+    @property
+    def provider_name(self) -> str | None:
+        return self._inner.provider_name if self._inner is not None else None
+
+    @property
+    def provider_url(self) -> str | None:
+        return self._inner.provider_url if self._inner is not None else None
+
+    @property
+    def timestamp(self) -> Any:
+        return self._inner.timestamp if self._inner is not None else None
+
+    async def _get_event_iterator(self) -> AsyncIterator[Any]:  # pragma: no cover
+        raise NotImplementedError("use __aiter__")
+        yield  # make this an async generator
+
+    async def close_stream(self) -> None:
+        if self._inner is not None:
+            await self._inner.close_stream()
 
 
 class ApiAgentLoop(Planner):
@@ -299,7 +373,8 @@ def _build_model_settings(model: Model, max_tokens: int) -> ModelSettings:
     """Configure sequential calls and preserve Anthropic prompt caching."""
     from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 
-    if isinstance(model, AnthropicModel):
+    base_model = getattr(model, "wrapped", model)
+    if isinstance(base_model, AnthropicModel):
         return AnthropicModelSettings(
             max_tokens=max_tokens,
             parallel_tool_calls=False,

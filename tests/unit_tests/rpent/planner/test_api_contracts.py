@@ -33,7 +33,7 @@ from pydantic_ai import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 from pydantic_ai.models.function import DeltaThinkingPart, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -179,6 +179,23 @@ def test_finish_returns_transcript_for_rpent_without_step_files(tmp_path, monkey
     assert "finish" not in [
         t.name for t in model.last_model_request_parameters.function_tools
     ]
+
+
+def test_retrying_model_retries_transient_stream_failure(tmp_path):
+    attempts = 0
+
+    async def stream(messages, info):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ModelAPIError("test", "upstream_error: relay hiccup")
+        yield finish()
+
+    result, toolkit, _ = solve(tmp_path, FunctionModel(stream_function=stream))
+    assert result.error is None
+    assert result.finish_result == {"_finish": True, **FINISH_ARGS}
+    assert toolkit.calls == [("finish", FINISH_ARGS)]
+    assert attempts == 2
 
 
 def test_refused_finish_retries_without_claiming_success(tmp_path):
