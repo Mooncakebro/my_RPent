@@ -181,6 +181,32 @@ def test_finish_returns_transcript_for_rpent_without_step_files(tmp_path, monkey
     ]
 
 
+def test_relay_message_ids_are_stripped_from_history():
+    from pydantic_ai.messages import ModelResponse, TextPart
+
+    from rpent.planner.api_loop import _strip_relay_message_ids
+
+    relay = ModelResponse(
+        parts=[
+            TextPart(
+                content=" ",
+                id="msg-20261019abc",
+                provider_name="openai",
+            )
+        ],
+        provider_response_id="msg-20261019def",
+    )
+    native = ModelResponse(
+        parts=[TextPart(content="hello", id="msg_123", provider_name="openai")],
+        provider_response_id="resp_123",
+    )
+    cleaned = _strip_relay_message_ids([relay, native])
+    assert cleaned[0].provider_response_id is None
+    assert cleaned[0].parts == []
+    assert cleaned[1].provider_response_id == "resp_123"
+    assert cleaned[1].parts[0].id == "msg_123"
+
+
 def test_retrying_model_retries_transient_stream_failure(tmp_path):
     attempts = 0
 

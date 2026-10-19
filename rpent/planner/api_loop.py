@@ -25,6 +25,7 @@ import json
 import threading
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from functools import partial
 from typing import Any
 from uuid import uuid4
@@ -57,7 +58,7 @@ from pydantic_ai.agent import WrapperAgent
 from pydantic_ai.capabilities import AbstractCapability, Thinking, on_event
 from pydantic_ai.capabilities.abstract import AgentNode, NodeResult, WrapRunHandler
 from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded, UserError
-from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, UserContent
 from pydantic_ai.models import Model, ModelRequestContext, StreamedResponse
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.run import AgentRun, AgentRunResult
@@ -75,6 +76,39 @@ logger = get_logger("api")
 
 class _RequestBudgetExhausted(Exception):
     """The conversation has used its configured model-request budget."""
+
+
+def _strip_relay_message_ids(messages: Any) -> Any:
+    """Drop one-api relay message ids that its Responses endpoint rejects.
+
+    The relay returns assistant message/part ids like ``msg-2026...`` but then
+    rejects them when they are sent back as ``input[].id``. Tool-call ids are
+    separate and stay intact; only response-level ids are cleared. Empty text
+    parts are dropped because they carry such ids without adding content.
+    """
+
+    cleaned = []
+    for message in messages:
+        if isinstance(message, ModelResponse):
+            parts = []
+            changed = False
+            for part in message.parts:
+                if isinstance(part, TextPart) and not part.content.strip():
+                    changed = True
+                    continue
+                part_id = getattr(part, "id", None)
+                if isinstance(part_id, str) and part_id.startswith("msg-"):
+                    part = replace(part, id=None)
+                    changed = True
+                parts.append(part)
+            response_id = message.provider_response_id
+            if isinstance(response_id, str) and response_id.startswith("msg-"):
+                message = replace(message, provider_response_id=None)
+                changed = True
+            if changed:
+                message = replace(message, parts=parts)
+        cleaned.append(message)
+    return cleaned
 
 
 class _RetryingModel(WrapperModel):
@@ -105,7 +139,9 @@ class _RetryingModel(WrapperModel):
             attempt += 1
             try:
                 return await self.wrapped.request(
-                    messages, model_settings, model_request_parameters
+                    _strip_relay_message_ids(messages),
+                    model_settings,
+                    model_request_parameters,
                 )
             except ModelAPIError as error:
                 message = str(error)
@@ -132,7 +168,7 @@ class _RetryingModel(WrapperModel):
     ) -> AsyncIterator[StreamedResponse]:
         yield _RetryingStreamedResponse(
             opener=lambda: self.wrapped.request_stream(
-                messages,
+                _strip_relay_message_ids(messages),
                 model_settings,
                 model_request_parameters,
                 run_context=run_context,
