@@ -21,22 +21,27 @@ current public frame; pixel projection is unavailable when the evaluator uses
 the RGB-only wrapper without metric depth.
 
 TIME BUDGET: the episode wall clock is fixed (~800 s) and every tool call
-eats it. Use at most 8-12 chunks per `pi0_nav_pick` call, and check progress
-with `observe` between calls. On the first `observe`, the camera frame may be
-reported as not initialized — retry after one action. If `observe` or a
-primitive reports an error, adapt immediately; do not repeat the failing call
-more than once."""
+eats it. Use 4-6 chunks for a button press and 8-12 only for approach or
+navigation. Check progress with `observe` between calls. On the first
+`observe`, the camera frame may be reported as not initialized — retry after
+one action. If `observe` or a primitive reports an error, adapt immediately;
+do not repeat the failing call more than once.
+
+FINAL PRESS: inspect the head view and, when useful, a wrist view before
+pressing. Identify the small red center of the large black circular control.
+Keep the radio stationary: if it is already stable on the table or held
+steadily, press it in place rather than picking it up or reorienting it. Do
+not combine reorientation and pressing in one instruction."""
 
 BRIDGE_TERMINATION = """`finish` is advisory only. Official success is computed
 by the evaluator's BDDL predicates, not by this bridge or planner. Distinguish
 planner completion from evaluator success and report uncertainty honestly.
 
-Calling `finish` does NOT end the episode: the evaluator keeps stepping and the
-robot freezes into a hold for the remaining budget. Only call `finish` when the
-episode budget is nearly exhausted or the task is clearly impossible. Otherwise
-keep trying variations of the approach (different hand, different contact point,
-different instruction phrasing) until the evaluator itself terminates the
-episode. Unused episode time after `finish` is wasted time."""
+A text-only answer or an early `finish` does not end the evaluator episode.
+The bridge re-prompts you while the episode is active. Keep trying variations
+of the approach (different hand, different contact point, different instruction
+phrasing) until the evaluator itself terminates the episode. Only call `finish`
+when the step budget is nearly exhausted or the task is clearly impossible."""
 
 PRIOR_KNOWLEDGE = """PRIOR TASK KNOWLEDGE (published local memory, if any):
 

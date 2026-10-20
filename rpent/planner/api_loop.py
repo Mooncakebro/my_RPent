@@ -58,7 +58,7 @@ from pydantic_ai.agent import WrapperAgent
 from pydantic_ai.capabilities import AbstractCapability, Thinking, on_event
 from pydantic_ai.capabilities.abstract import AgentNode, NodeResult, WrapRunHandler
 from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded, UserError
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, UserContent
+from pydantic_ai.messages import ModelMessage, ModelResponse, UserContent
 from pydantic_ai.models import Model, ModelRequestContext, StreamedResponse
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.run import AgentRun, AgentRunResult
@@ -278,6 +278,20 @@ class _RetryingStreamedResponse(StreamedResponse):
             await self._inner.close_stream()
 
 
+_CONTINUE_WITHOUT_FINISH = (
+    "The evaluator episode is still active. Do not end with a text-only answer. "
+    "Continue now with a tool call: observe, read_image, pi0_nav_pick, open, or "
+    "close. Call finish only when the evaluator terminates the episode or the "
+    "step budget is nearly exhausted."
+)
+_CONTINUE_AFTER_FINISH = (
+    "The evaluator episode is still active and official success was not "
+    "confirmed. finish is advisory and does not end the episode. Continue with "
+    "another targeted tool call; do not call finish again until the evaluator "
+    "terminates the episode."
+)
+
+
 class ApiAgentLoop(Planner):
     """Implement ``Planner`` with a native Agent and reusable Harness capabilities."""
 
@@ -291,11 +305,16 @@ class ApiAgentLoop(Planner):
         no_images: bool = False,
         timeout_s: float = 1200,
         interactive: bool = False,
+        continue_without_finish: bool = False,
+        continue_after_finish: bool = False,
+        max_continuations: int = 0,
     ) -> None:
         if reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"unsupported reasoning effort: {reasoning_effort}")
         if max_tokens < 1 or timeout_s <= 0:
             raise ValueError("max_tokens and timeout_s must be positive")
+        if max_continuations < 0:
+            raise ValueError("max_continuations must be non-negative")
         self.model = _RetryingModel(model)
         self.dashboard_events = dashboard_events
         self.max_tokens = max_tokens
@@ -303,6 +322,9 @@ class ApiAgentLoop(Planner):
         self.no_images = no_images
         self.timeout_s = timeout_s
         self.interactive = interactive
+        self.continue_without_finish = bool(continue_without_finish)
+        self.continue_after_finish = bool(continue_after_finish)
+        self.max_continuations = int(max_continuations)
 
     def solve(
         self,
@@ -344,7 +366,13 @@ class ApiAgentLoop(Planner):
             toolkit, dashboard_events=self.dashboard_events, no_images=self.no_images
         )
         session = _Session(
-            adapter, conversation_id, max_turns, interactive=self.interactive
+            adapter,
+            conversation_id,
+            max_turns,
+            interactive=self.interactive,
+            continue_without_finish=self.continue_without_finish,
+            continue_after_finish=self.continue_after_finish,
+            max_continuations=self.max_continuations,
         )
         agent = Agent(
             self.model,
@@ -648,12 +676,19 @@ class _Session(AbstractCapability):
         max_turns: int,
         *,
         interactive: bool = False,
+        continue_without_finish: bool = False,
+        continue_after_finish: bool = False,
+        max_continuations: int = 0,
     ) -> None:
         self.toolkit = toolkit
         self.conversation_id = conversation_id
         self.limits = UsageLimits(request_limit=max_turns)
         self.usage = RunUsage()
         self.interactive = interactive
+        self.continue_without_finish = continue_without_finish
+        self.continue_after_finish = continue_after_finish
+        self.max_continuations = max_continuations
+        self.continuations = 0
         self.error: str | None = None
         self.control: DashboardPlannerControl | None = None
         self.inbox: asyncio.Queue[DashboardMessage] = asyncio.Queue()
@@ -858,6 +893,7 @@ class _Session(AbstractCapability):
             self.cancellation = CancellationToken()
             self.run_done.clear()
             self.completions = 1
+            completed = False
             try:
                 await agent.run(
                     prompt,
@@ -865,6 +901,7 @@ class _Session(AbstractCapability):
                     conversation_id=self.conversation_id,
                     cancellation_token=self.cancellation,
                 )
+                completed = True
             except RunCancelled:
                 self.error = None
             finally:
@@ -874,6 +911,15 @@ class _Session(AbstractCapability):
                     for pending in self.enqueued.values():
                         self.control.message_discarded(pending.message_id)
                 self.enqueued.clear()
+
+            continuation = self._continuation_prompt() if completed else None
+            if continuation is not None:
+                prompt = continuation
+                self.continuations += 1
+                self.toolkit.finish_result = None
+                self.emit_user(prompt)
+                continue
+
             if self.toolkit.finish_result is not None or self.control is None:
                 return
             if self.usage.requests >= self.limits.request_limit:
@@ -883,3 +929,14 @@ class _Session(AbstractCapability):
             submission = await self.inbox.get()
             self.control.message_started(submission.message_id, submission.text)
             prompt = submission.text
+
+    def _continuation_prompt(self) -> str | None:
+        """Return an eval-mode continuation prompt when the run ended early."""
+
+        if self.continuations >= self.max_continuations:
+            return None
+        if self.usage.requests >= self.limits.request_limit:
+            return None
+        if self.toolkit.finish_result is not None:
+            return _CONTINUE_AFTER_FINISH if self.continue_after_finish else None
+        return _CONTINUE_WITHOUT_FINISH if self.continue_without_finish else None

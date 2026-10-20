@@ -181,6 +181,12 @@ class BridgedAgent:
             planner_timeout_s=planner_timeout_s,
             dashboard_events=self._dashboard_events,
             no_images=no_images,
+            # The evaluator, not the planner, owns episode termination. A
+            # text-only answer or an early finish keeps the episode running,
+            # so re-prompt instead of letting the bridge hold until timeout.
+            continue_without_finish=True,
+            continue_after_finish=True,
+            max_continuations=12,
         )
 
     def run(self) -> Any:
@@ -269,6 +275,16 @@ def _sanitize_memory_step(value: Any) -> Any:
                 "_standalone_only_step": dict(value),
                 "bridge_substitute": _BRIDGE_SUBSTITUTE,
             }
+        if action == "pi0_nav_pick":
+            chunks = value.get("chunks")
+            if isinstance(chunks, int) and not isinstance(chunks, bool) and chunks > 12:
+                instruction = str(value.get("instruction", "")).lower()
+                press_like = any(
+                    word in instruction
+                    for word in ("press", "push", "button", "knob", "red center")
+                )
+                value = dict(value)
+                value["chunks"] = 6 if press_like else 12
         return {key: _sanitize_memory_step(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_sanitize_memory_step(item) for item in value]
@@ -301,6 +317,85 @@ def _sanitize_memory_text(text: str) -> str:
         "" if parsed is None else json.dumps(_sanitize_memory_step(parsed), ensure_ascii=False)
         for parsed in parsed_lines
     )
+
+
+def _summarize_memory_audit(text: str) -> str | None:
+    """Reduce an audit JSON file to the transferable strategy."""
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not (
+        {"command_sequence", "strategy_notes", "official_success_receipt"} & data.keys()
+    ):
+        return None
+    lines: list[str] = []
+    if data.get("task_name"):
+        lines.append(
+            f"task: {data['task_name']} (public seed {data.get('public_seed')})"
+        )
+    receipt = data.get("official_success_receipt")
+    if isinstance(receipt, dict):
+        lines.append(
+            f"official_result: success at evaluator step {receipt.get('env_step')}"
+        )
+    else:
+        lines.append("official_result: no success receipt")
+    notes = data.get("strategy_notes")
+    if isinstance(notes, str) and notes.strip():
+        lines.append("strategy_notes: " + notes.strip())
+
+    commands = data.get("command_sequence")
+    if isinstance(commands, list):
+        successful = [
+            command
+            for command in commands
+            if isinstance(command, dict)
+            and command.get("official_success") is True
+            and command.get("action") == "pi0_nav_pick"
+        ]
+        if successful:
+            lines.append("successful pi0_nav_pick steps:")
+            for command in successful[-2:]:
+                lines.append(
+                    json.dumps(
+                        _sanitize_memory_step(
+                            {
+                                key: command[key]
+                                for key in ("action", "chunks", "instruction")
+                                if key in command
+                            }
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+        failed = [
+            command
+            for command in commands
+            if isinstance(command, dict)
+            and command.get("official_success") is not True
+            and command.get("primitive_success") is False
+            and command.get("action")
+        ]
+        if failed:
+            lines.append("failed steps to avoid:")
+            for command in failed[-3:]:
+                lines.append(
+                    json.dumps(
+                        _sanitize_memory_step(
+                            {
+                                key: command[key]
+                                for key in ("action", "hand", "stop_reason")
+                                if key in command
+                            }
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+    if len(lines) <= 1:
+        return None
+    return "\n".join(lines)
 
 
 def load_task_memory_excerpt(
@@ -344,7 +439,8 @@ def load_task_memory_excerpt(
             continue
         seen.add(path)
         try:
-            text = _sanitize_memory_text(path.read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
+            text = _summarize_memory_audit(raw) or _sanitize_memory_text(raw)
         except Exception:
             continue
         if not text.strip():

@@ -298,6 +298,43 @@ def test_load_task_memory_excerpt_collects_published_files(tmp_path) -> None:
     assert records[1]["_standalone_only_step"]["action"] == "press"
 
 
+def test_load_task_memory_excerpt_summarizes_audit_json(tmp_path) -> None:
+    from robots.behavior.bridge.agent import load_task_memory_excerpt
+
+    audit = {
+        "task_name": "turning_on_radio",
+        "public_seed": 0,
+        "official_success_receipt": {"env_step": 1944},
+        "strategy_notes": "Use the left index fingertip on the red center.",
+        "command_sequence": [
+            {"action": "pi0_nav_pick", "chunks": 10, "instruction": "approach"},
+            {
+                "action": "press",
+                "hand": "right",
+                "primitive_success": False,
+                "stop_reason": "joint_limit",
+            },
+            {
+                "action": "pi0_nav_pick",
+                "chunks": 13,
+                "instruction": "press the red center with the left hand",
+                "official_success": True,
+            },
+        ],
+        "large_audit_payload": "x" * 100_000,
+    }
+    (tmp_path / "task-specific").mkdir()
+    (tmp_path / "task-specific" / "turning_on_radio_s0.json").write_text(
+        json.dumps(audit)
+    )
+    excerpt = load_task_memory_excerpt(tmp_path, "turning_on_radio")
+    assert "strategy_notes: Use the left index fingertip" in excerpt
+    assert "official_result: success at evaluator step 1944" in excerpt
+    assert "press the red center with the left hand" in excerpt
+    assert '"_standalone_only_step"' in excerpt
+    assert "large_audit_payload" not in excerpt
+
+
 def test_msgpack_round_trip_nested_numpy_tree() -> None:
     value = {"rgb": np.zeros((2, 3, 3), dtype=np.uint8), "nested": {"x": np.arange(4, dtype=np.float32)}}
     result = MsgpackCodec.unpack(MsgpackCodec().pack(value))

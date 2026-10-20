@@ -111,6 +111,9 @@ def solve(tmp_path, model, toolkit=None, events=None, **kwargs):
             "no_images",
             "reasoning_effort",
             "interactive",
+            "continue_without_finish",
+            "continue_after_finish",
+            "max_continuations",
         )
         if key in kwargs
     }
@@ -222,6 +225,53 @@ def test_retrying_model_retries_transient_stream_failure(tmp_path):
     assert result.finish_result == {"_finish": True, **FINISH_ARGS}
     assert toolkit.calls == [("finish", FINISH_ARGS)]
     assert attempts == 2
+
+
+def test_continue_without_finish_re_prompts_text_only_run(tmp_path):
+    attempts = 0
+
+    async def stream(messages, info):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            yield "I cannot confirm success."
+        else:
+            yield finish()
+
+    result, toolkit, _ = solve(
+        tmp_path,
+        FunctionModel(stream_function=stream),
+        continue_without_finish=True,
+        max_continuations=2,
+    )
+    assert result.error is None
+    assert result.finish_result == {"_finish": True, **FINISH_ARGS}
+    assert toolkit.calls == [("finish", FINISH_ARGS)]
+    assert attempts == 2
+    assert any(
+        message.get("role") == "user" and "still active" in str(message.get("content"))
+        for message in result.messages
+    )
+
+
+def test_continue_after_finish_re_prompts_early_finish(tmp_path):
+    attempts = 0
+
+    async def stream(messages, info):
+        nonlocal attempts
+        attempts += 1
+        yield finish()
+
+    result, toolkit, _ = solve(
+        tmp_path,
+        FunctionModel(stream_function=stream),
+        continue_after_finish=True,
+        max_continuations=1,
+    )
+    assert result.error is None
+    assert result.finish_result == {"_finish": True, **FINISH_ARGS}
+    assert attempts == 2
+    assert len([call for call in toolkit.calls if call[0] == "finish"]) == 2
 
 
 def test_refused_finish_retries_without_claiming_success(tmp_path):
