@@ -121,9 +121,15 @@ class _RetryingModel(WrapperModel):
     times with a short backoff; all other errors propagate unchanged.
     """
 
-    _TRANSIENT_CODES = {"upstream_error", "server_error", "overloaded"}
+    _TRANSIENT_CODES = {
+        "upstream_error",
+        "server_error",
+        "overloaded",
+        "stream_timeout",
+        "rate_limit",
+    }
 
-    def __init__(self, model: Model, *, attempts: int = 4, backoff_s: float = 2.0) -> None:
+    def __init__(self, model: Model, *, attempts: int = 8, backoff_s: float = 2.0) -> None:
         super().__init__(model)
         self._attempts = attempts
         self._backoff_s = backoff_s
@@ -150,7 +156,7 @@ class _RetryingModel(WrapperModel):
                 )
                 if not transient or attempt >= self._attempts:
                     raise
-                await asyncio.sleep(self._backoff_s * attempt)
+                await asyncio.sleep(min(self._backoff_s * (2 ** (attempt - 1)), 30.0))
                 logger.warning(
                     "model upstream failure (%s); retrying %d/%d",
                     message,
@@ -224,7 +230,7 @@ class _RetryingStreamedResponse(StreamedResponse):
                 )
                 if not transient or attempt >= self._attempts:
                     raise
-                await asyncio.sleep(self._backoff_s * attempt)
+                await asyncio.sleep(min(self._backoff_s * (2 ** (attempt - 1)), 30.0))
                 logger.warning(
                     "model upstream stream failure (%s); retrying %d/%d",
                     message,
