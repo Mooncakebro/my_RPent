@@ -273,6 +273,7 @@ class ShimBehaviorEnv:
         self.total_env_steps = 0
         self._gripper = {"left": 1.0, "right": 1.0}
         self._finished = False
+        self.episode_over = False
 
     @property
     def official_success_latched(self) -> bool:
@@ -285,6 +286,7 @@ class ShimBehaviorEnv:
     def reset(self) -> tuple[dict[str, Any], dict[str, Any]]:
         raw = self.rendezvous.observations.get(timeout=300.0)
         if raw.get("_bridge_closed"):
+            self.episode_over = True
             raise RuntimeError("bridge episode was reset")
         self.last_observation = adapt_observation(raw, task_language=self.task_language)
         self.total_env_steps = 0
@@ -314,6 +316,7 @@ class ShimBehaviorEnv:
         self.rendezvous.put_action(safe)
         raw = self.rendezvous.observations.get(timeout=600.0)
         if raw.get("_bridge_closed"):
+            self.episode_over = True
             raise RuntimeError("bridge episode was reset")
         self.last_observation = adapt_observation(raw, task_language=self.task_language)
         self.total_env_steps += 1

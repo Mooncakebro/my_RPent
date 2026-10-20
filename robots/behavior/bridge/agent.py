@@ -60,7 +60,9 @@ class BridgedAgent:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.memory_profile = memory_profile
         self.max_turns = int(max_turns or 64)
-        self.planner_timeout_s = planner_timeout_s
+        self.planner_timeout_s = (
+            float(planner_timeout_s) if planner_timeout_s is not None else 7200.0
+        )
         self.no_images = no_images
         self._owned_daemons: dict[str, Any] = {}
         self._dashboard_events = NullDashboardEventSink()
@@ -114,7 +116,7 @@ class BridgedAgent:
                 "mode": "bridge",
                 "behavior_phase": "eval",
                 "max_episode_steps": int(max_episode_steps),
-                "wall_clock_seconds": int(planner_timeout_s or 7200),
+                "wall_clock_seconds": int(self.planner_timeout_s),
                 "memory_dir": str(self.memory_dir),
                 "memory_profile": memory_profile,
                 "memory_inbox": str(self.memory_dir / "_internal" / "inbox" / "bridge"),
@@ -171,6 +173,12 @@ class BridgedAgent:
             prompt_bundle.user_prompt(variables=prompt_vars),
             variables=prompt_vars,
         )
+        toolkit = self.toolkit
+
+        def _episode_active() -> bool:
+            env = getattr(toolkit.primitives, "env", None)
+            return not getattr(env, "episode_over", False)
+
         self.planner = build_planner(
             planner,
             output_dir=self.output_dir,
@@ -178,7 +186,7 @@ class BridgedAgent:
             robot_name="behavior",
             model=model,
             memory_dir=self.memory_dir,
-            planner_timeout_s=planner_timeout_s,
+            planner_timeout_s=int(self.planner_timeout_s),
             dashboard_events=self._dashboard_events,
             no_images=no_images,
             # The evaluator, not the planner, owns episode termination. A
@@ -187,6 +195,7 @@ class BridgedAgent:
             continue_without_finish=True,
             continue_after_finish=True,
             max_continuations=12,
+            continue_when=_episode_active,
         )
 
     def run(self) -> Any:

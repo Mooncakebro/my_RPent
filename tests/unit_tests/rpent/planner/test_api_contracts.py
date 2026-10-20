@@ -114,6 +114,7 @@ def solve(tmp_path, model, toolkit=None, events=None, **kwargs):
             "continue_without_finish",
             "continue_after_finish",
             "max_continuations",
+            "continue_when",
         )
         if key in kwargs
     }
@@ -272,6 +273,27 @@ def test_continue_after_finish_re_prompts_early_finish(tmp_path):
     assert result.finish_result == {"_finish": True, **FINISH_ARGS}
     assert attempts == 2
     assert len([call for call in toolkit.calls if call[0] == "finish"]) == 2
+
+
+def test_continuation_stops_when_episode_is_over(tmp_path):
+    attempts = 0
+
+    async def stream(messages, info):
+        nonlocal attempts
+        attempts += 1
+        yield "I cannot confirm success."
+
+    result, toolkit, _ = solve(
+        tmp_path,
+        FunctionModel(stream_function=stream),
+        continue_without_finish=True,
+        max_continuations=2,
+        continue_when=lambda: False,
+    )
+    assert result.error is None
+    assert result.finish_result is None
+    assert toolkit.calls == []
+    assert attempts == 1
 
 
 def test_refused_finish_retries_without_claiming_success(tmp_path):

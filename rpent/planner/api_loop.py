@@ -23,7 +23,7 @@ import asyncio
 import base64
 import json
 import threading
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from functools import partial
@@ -314,6 +314,7 @@ class ApiAgentLoop(Planner):
         continue_without_finish: bool = False,
         continue_after_finish: bool = False,
         max_continuations: int = 0,
+        continue_when: Callable[[], bool] | None = None,
     ) -> None:
         if reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"unsupported reasoning effort: {reasoning_effort}")
@@ -331,6 +332,7 @@ class ApiAgentLoop(Planner):
         self.continue_without_finish = bool(continue_without_finish)
         self.continue_after_finish = bool(continue_after_finish)
         self.max_continuations = int(max_continuations)
+        self.continue_when = continue_when
 
     def solve(
         self,
@@ -379,6 +381,7 @@ class ApiAgentLoop(Planner):
             continue_without_finish=self.continue_without_finish,
             continue_after_finish=self.continue_after_finish,
             max_continuations=self.max_continuations,
+            continue_when=self.continue_when,
         )
         agent = Agent(
             self.model,
@@ -685,6 +688,7 @@ class _Session(AbstractCapability):
         continue_without_finish: bool = False,
         continue_after_finish: bool = False,
         max_continuations: int = 0,
+        continue_when: Callable[[], bool] | None = None,
     ) -> None:
         self.toolkit = toolkit
         self.conversation_id = conversation_id
@@ -694,6 +698,7 @@ class _Session(AbstractCapability):
         self.continue_without_finish = continue_without_finish
         self.continue_after_finish = continue_after_finish
         self.max_continuations = max_continuations
+        self.continue_when = continue_when
         self.continuations = 0
         self.error: str | None = None
         self.control: DashboardPlannerControl | None = None
@@ -940,6 +945,8 @@ class _Session(AbstractCapability):
         """Return an eval-mode continuation prompt when the run ended early."""
 
         if self.continuations >= self.max_continuations:
+            return None
+        if self.continue_when is not None and not self.continue_when():
             return None
         if self.usage.requests >= self.limits.request_limit:
             return None

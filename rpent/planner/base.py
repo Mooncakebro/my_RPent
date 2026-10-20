@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import queue
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -191,6 +192,7 @@ def build_planner(
     continue_without_finish: bool = False,
     continue_after_finish: bool = False,
     max_continuations: int = 0,
+    continue_when: Callable[[], bool] | None = None,
 ) -> Planner:
     """Build a planner for the given backend, resolving credentials from env vars."""
     # Imports are deferred to avoid a circular import: api_loop / claude_code /
@@ -214,6 +216,7 @@ def build_planner(
             continue_without_finish=continue_without_finish,
             continue_after_finish=continue_after_finish,
             max_continuations=max_continuations,
+            continue_when=continue_when,
         )
     if planner_type == "claude_code":
         from rpent.planner.claude_code import ClaudeCodePlanner

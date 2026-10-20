@@ -137,6 +137,7 @@ def test_abort_wakes_agent_blocked_in_step() -> None:
     assert policy._done.is_set()
     assert policy._error is not None
     assert "bridge episode was reset" in str(policy._error)
+    assert policy.env is not None and policy.env.episode_over is True
 
 
 def test_stale_generation_does_not_mark_new_agent_done() -> None:
